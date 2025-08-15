@@ -1,0 +1,112 @@
+import requests
+import feedparser
+from datetime import datetime
+import pytz
+from apscheduler.schedulers.background import BackgroundScheduler
+from telegram import Update
+from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
+import os
+from bs4 import BeautifulSoup
+
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+CHAT_ID = os.getenv("CHAT_ID")
+
+COINS = ["ethereum", "bitcoin", "sui", "ripple"]
+
+# ----- MARKNADSOVERSIKT -----
+def get_prices():
+    url = f"https://api.coingecko.com/api/v3/simple/price?ids={','.join(COINS)}&vs_currencies=usd&include_24hr_change=true"
+    data = requests.get(url).json()
+    result = "📊 *Snabb marknadsöversikt*\n"
+    for coin in COINS:
+        name = coin.capitalize()
+        price = data[coin]["usd"]
+        change = data[coin]["usd_24h_change"]
+        result += f"• {name}: ${price:.2f} ({change:+.2f}% 24h)\n"
+    return result
+
+# ----- NYHETER -----
+def get_news():
+    feeds = {
+        "Börsnyheter": [
+            "https://feeds.a.dj.com/rss/RSSMarketsMain.xml",
+            "https://www.di.se/rss"
+        ],
+        "Krypto-nyheter": [
+            "https://www.coindesk.com/arc/outboundfeeds/rss/",
+            "https://cointelegraph.com/rss"
+        ]
+    }
+    news_text = ""
+    for category, urls in feeds.items():
+        news_text += f"\n📰 *{category}*\n"
+        for url in urls:
+            feed = feedparser.parse(url)
+            for entry in feed.entries[:2]:
+                news_text += f"• [{entry.title}]({entry.link})\n"
+    return news_text
+
+# ----- REDDIT TRENDER -----
+def get_reddit_trends():
+    try:
+        url = "https://www.reddit.com/r/cryptocurrency/hot/.rss"
+        headers = {'User-agent': 'Mozilla/5.0'}
+        feed = feedparser.parse(requests.get(url, headers=headers).content)
+        text = "\n🔥 *Reddit-trender*\n"
+        for entry in feed.entries[:5]:
+            text += f"• [{entry.title}]({entry.link})\n"
+        return text
+    except:
+        return "\n🔥 *Reddit-trender*: Går ej att hämta just nu.\n"
+
+# ----- TWITTER TRENDER -----
+def get_twitter_trends():
+    try:
+        url = "https://trends24.in/sweden/"
+        soup = BeautifulSoup(requests.get(url).content, "html.parser")
+        trends = soup.find_all("ol", class_="trend-card__list")
+        text = "\n🐦 *Twitter-trender*\n"
+        if trends:
+            for li in trends[0].find_all("li")[:5]:
+                trend = li.get_text(strip=True)
+                text += f"• {trend}\n"
+        return text
+    except:
+        return "\n🐦 *Twitter-trender*: Går ej att hämta just nu.\n"
+
+# ----- ANALYS -----
+def analyze_sentiment():
+    # Enkel placeholder för bullish/bearish
+    return "\n📈 *Kort analys*: Marknaden ser blandad ut idag.\n"
+
+# ----- BYGG BULLETIN -----
+def build_bulletin():
+    bulletin = get_prices()
+    bulletin += get_news()
+    bulletin += get_reddit_trends()
+    bulletin += get_twitter_trends()
+    bulletin += analyze_sentiment()
+    return bulletin
+
+# ----- SKICKA TILL TELEGRAM -----
+async def send_bulletin(app):
+    bulletin = build_bulletin()
+    await app.bot.send_message(chat_id=CHAT_ID, text=bulletin, parse_mode="Markdown")
+
+# ----- MANUELL /MORGON -----
+async def manual_bulletin(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(build_bulletin(), parse_mode="Markdown")
+
+# ----- HUVUD -----
+def main():
+    app = ApplicationBuilder().token(BOT_TOKEN).build()
+    app.add_handler(CommandHandler("morgon", manual_bulletin))
+
+    scheduler = BackgroundScheduler(timezone=pytz.timezone("Europe/Stockholm"))
+    scheduler.add_job(lambda: app.create_task(send_bulletin(app)), 'cron', hour=9, minute=0)
+    scheduler.start()
+
+    app.run_polling()
+
+if __name__ == "__main__":
+    main()
